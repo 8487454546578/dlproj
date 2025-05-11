@@ -1,5 +1,5 @@
 from typing import List
-from .llmrankers.rankers import LlmRanker, SearchResult
+from llmrankers.rankers import LlmRanker, SearchResult
 from itertools import combinations
 from collections import defaultdict
 from tqdm import tqdm
@@ -24,6 +24,20 @@ class Text2TextGenerationDataset(Dataset):
     def __getitem__(self, item):
         return {'input_ids': self.data['input_ids'][item],
                 'attention_mask': self.data['attention_mask'][item]}
+
+
+class ComparableDoc:
+    def __init__(self, docid, text, ranker):
+        self.docid = docid
+        self.text = text
+        self.ranker = ranker
+
+    def __gt__(self, other):
+        out = self.ranker.compare("", [self.text, other.text])
+        if out[0] == "Passage A" and out[1] == "Passage B":
+            return True
+        else:
+            return False
 
 
 class PairwiseLlmRanker(LlmRanker):
@@ -141,11 +155,32 @@ Output Passage A or Passage B:"""
         return output
 
     def heapSort(self, arr, k):
-        ############################## TODO ############################
-        #
-        #               提示：使用compare函数进行比较
-        #
-        ################################################################
+        import heapq
+        # 使用负值模拟最大堆（逆转比较结果）
+        heap = []
+        for doc in arr:
+            heapq.heappush(
+                heap, (-self.compare("", [doc.text, arr[0].text])[0] == "Passage A", doc))
+
+        # 从堆中提取前 k 个元素（排序后的文档）
+        sorted_arr = [heapq.heappop(heap)[1] for _ in range(k)]
+        arr[:] = sorted_arr  # 将排序后的结果覆盖到原始数组
+
+    def bubblesort(self, query: str, ranking: List[SearchResult], k=10):
+        # 我们只对前 k 个文档进行排序
+        arr = [ComparableDoc(docid=doc.docid, text=doc.text, ranker=self)
+               for doc in ranking[:k]]
+
+        for i in range(k):
+            for j in range(0, k - i - 1):
+                # 比较文档 j 和 j+1
+                if self.compare(query, [arr[j].text, arr[j + 1].text])[0] == "Passage B":
+                    # 如果需要，交换它们
+                    arr[j], arr[j + 1] = arr[j + 1], arr[j]
+
+        # 用排序后的文档更新排名
+        ranking[:k] = [SearchResult(
+            docid=doc.docid, score=-i, text=None) for i, doc in enumerate(arr)]
 
     def rerank(self, query: str, ranking: List[SearchResult]) -> List[SearchResult]:
         original_ranking = copy.deepcopy(ranking)
@@ -212,19 +247,6 @@ Output Passage A or Passage B:"""
                              key=lambda x: x.score, reverse=True)
 
         elif self.method == "heapsort":
-            class ComparableDoc:
-                def __init__(self, docid, text, ranker):
-                    self.docid = docid
-                    self.text = text
-                    self.ranker = ranker
-
-                def __gt__(self, other):
-                    out = self.ranker.compare(query, [self.text, other.text])
-                    if out[0] == "Passage A" and out[1] == "Passage B":
-                        return True
-                    else:
-                        return False
-
             arr = [ComparableDoc(docid=doc.docid, text=doc.text,
                                  ranker=self) for doc in ranking]
             self.heapSort(arr, self.k)
@@ -232,14 +254,8 @@ Output Passage A or Passage B:"""
                        for i, doc in enumerate(reversed(arr))]
 
         elif self.method == "bubblesort":
-            ############################## TODO ############################
-            #
-            # 注意：我们只关注前十个文档的正确排序，因此冒泡排序只需要进行k=10轮即可
-            # 提示：需要使用compare函数进行比较
-            #
-            ################################################################
+            self.bubblesort(query, ranking, k=self.k)
         else:
-
             raise NotImplementedError(
                 f'Method {self.method} is not implemented.')
 
@@ -260,172 +276,3 @@ Output Passage A or Passage B:"""
 
     def truncate(self, text, length):
         return self.tokenizer.convert_tokens_to_string(self.tokenizer.tokenize(text)[:length])
-
-
-class DuoT5LlmRanker(PairwiseLlmRanker):
-    def compare(self, query: str, docs: List[str]) -> bool:
-        self.total_compare += 1
-        self.prompt = 'Query: {query} Document0: {doc1} Document1: {doc2} Relevant:'
-
-        inputs = [self.prompt.format(query=query, doc1=docs[0], doc2=docs[1]),
-                  self.prompt.format(query=query, doc1=docs[1], doc2=docs[0])]
-        inputs = self.tokenizer(
-            inputs, padding=True, truncation=True, return_tensors="pt").to(self.llm.device)
-        decode_ids = torch.full((2, 1),
-                                self.llm.config.decoder_start_token_id,
-                                dtype=torch.long, device=self.llm.device)
-
-        self.total_prompt_tokens += inputs['input_ids'].shape[0] * \
-            inputs['input_ids'].shape[1]
-
-        with torch.no_grad():
-            logits = self.llm(input_ids=inputs['input_ids'],
-                              attention_mask=inputs['attention_mask'],
-                              decoder_input_ids=decode_ids).logits
-            # 6136 and 1176 are the indexes of the tokens false and true in T5.
-            batch_scores = logits[:, 0, [6136, 1176]]
-            batch_scores = torch.nn.functional.softmax(batch_scores, dim=1)
-            batch_probs = batch_scores[:, 1]
-        return batch_probs[0] > batch_probs[1]
-
-    def rerank(self, query: str, ranking: List[SearchResult]) -> List[SearchResult]:
-        original_ranking = copy.deepcopy(ranking)
-        self.total_compare = 0
-        self.total_completion_tokens = 0
-        self.total_prompt_tokens = 0
-        if self.method == "heapsort":
-            class ComparableDoc:
-                def __init__(self, docid, text, ranker):
-                    self.docid = docid
-                    self.text = text
-                    self.ranker = ranker
-
-                def __gt__(self, other):
-                    return self.ranker.compare(query, [self.text, other.text])
-            arr = [ComparableDoc(docid=doc.docid, text=doc.text,
-                                 ranker=self) for doc in ranking]
-            self.heapSort(arr, self.k)
-            ranking = [SearchResult(docid=doc.docid, score=-i, text=None)
-                       for i, doc in enumerate(reversed(arr))]
-
-        else:
-            raise NotImplementedError(
-                f'Method {self.method} is not implemented.')
-
-        results = []
-        top_doc_ids = set()
-        rank = 1
-        for i, doc in enumerate(ranking[:self.k]):
-            top_doc_ids.add(doc.docid)
-            results.append(SearchResult(
-                docid=doc.docid, score=-rank, text=None))
-            rank += 1
-        for doc in original_ranking:
-            if doc.docid not in top_doc_ids:
-                results.append(SearchResult(
-                    docid=doc.docid, score=-rank, text=None))
-                rank += 1
-        return results
-
-
-class OpenAiPairwiseLlmRanker(PairwiseLlmRanker):
-    def __init__(self,
-                 model_name_or_path,
-                 api_key,
-                 method="heapsort",
-                 batch_size=2,
-                 k=10):
-        self.llm = model_name_or_path
-        self.tokenizer = tiktoken.encoding_for_model(model_name_or_path)
-        self.method = method
-        self.k = k
-        self.total_compare = 0
-        self.total_prompt_tokens = 0
-        self.total_completion_tokens = 0
-        self.CHARACTERS = ["A", "B"]
-        self.system_prompt = "You are RankGPT, an intelligent assistant specialized in selecting the most relevant passage from a pair of passages based on their relevance to the query."
-        self.prompt = """Given a query "{query}", which of the following two passages is more relevant to the query?
-        
-Passage A: "{doc1}"
-
-Passage B: "{doc2}"
-
-Output Passage A or Passage B:"""
-        openai.api_key = api_key
-
-    def _get_response(self, input_text):
-        while True:
-            try:
-                response = openai.ChatCompletion.create(
-                    model=self.llm,
-                    messages=[
-                        {"role": "system", "content": self.system_prompt},
-                        {"role": "user", "content": input_text},
-                    ],
-                    temperature=0.0,
-                    request_timeout=15
-                )
-                self.total_completion_tokens += int(
-                    response['usage']['completion_tokens'])
-                self.total_prompt_tokens += int(
-                    response['usage']['prompt_tokens'])
-
-                output = response['choices'][0]['message']['content']
-                matches = re.findall(r"(Passage [A-B])", output, re.MULTILINE)
-                if matches:
-                    output = matches[0][8]
-                elif output.strip() in self.CHARACTERS:
-                    pass
-                else:
-                    print(f"Unexpected output: {output}")
-                    output = "A"
-                return output
-
-            except openai.error.APIError as e:
-                # Handle API error here, e.g. retry or log
-                print(f"OpenAI API returned an API Error: {e}")
-                time.sleep(5)
-                continue
-            except openai.error.APIConnectionError as e:
-                # Handle connection error here
-                print(f"Failed to connect to OpenAI API: {e}")
-                time.sleep(5)
-                continue
-            except openai.error.RateLimitError as e:
-                # Handle rate limit error (we recommend using exponential backoff)
-                print(f"OpenAI API request exceeded rate limit: {e}")
-                time.sleep(5)
-                continue
-            except openai.error.InvalidRequestError as e:
-                # Handle invalid request error
-                print(f"OpenAI API request was invalid: {e}")
-                raise e
-            except openai.error.AuthenticationError as e:
-                # Handle authentication error
-                print(f"OpenAI API request failed authentication: {e}")
-                raise e
-            except openai.error.Timeout as e:
-                # Handle timeout error
-                print(f"OpenAI API request timed out: {e}")
-                time.sleep(5)
-                continue
-            except openai.error.ServiceUnavailableError as e:
-                # Handle service unavailable error
-                print(
-                    f"OpenAI API request failed with a service unavailable error: {e}")
-                time.sleep(5)
-                continue
-            except Exception as e:
-                print(f"Unknown error: {e}")
-                raise e
-
-    def compare(self, query: str, docs: List):
-        self.total_compare += 1
-        doc1, doc2 = docs[0], docs[1]
-        input_texts = [self.prompt.format(query=query, doc1=doc1, doc2=doc2),
-                       self.prompt.format(query=query, doc1=doc2, doc2=doc1)]
-
-        return [f'Passage {self._get_response(input_texts[0])}', f'Passage {self._get_response(input_texts[1])}']
-
-    def truncate(self, text, length):
-        return self.tokenizer.decode(self.tokenizer.encode(text)[:length])

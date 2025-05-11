@@ -5,7 +5,7 @@ from pyserini.search._base import get_topics
 from llmrankers.rankers import SearchResult
 # from llmrankers.pointwise import PointwiseLlmRanker, MonoT5LlmRanker
 # from llmrankers.setwise import SetwiseLlmRanker, OpenAiSetwiseLlmRanker
-# from llmrankers.pairwise import PairwiseLlmRanker, DuoT5LlmRanker, OpenAiPairwiseLlmRanker
+from llmrankers.pairwise import PairwiseLlmRanker, DuoT5LlmRanker, OpenAiPairwiseLlmRanker
 from llmrankers.listwise import OpenAiListwiseLlmRanker, ListwiseLlmRanker
 from tqdm import tqdm
 import argparse
@@ -85,33 +85,33 @@ def main(args):
     #                                   num_permutation=args.setwise.num_permutation,
     #                                   k=args.setwise.k)
 
-    # if args.pairwise:
-    #     if args.pairwise.method != 'allpair':
-    #         args.pairwise.batch_size = 2
-    #         logger.info(f'Setting batch_size to 2.')
+    if args.pairwise:
+        if args.pairwise.method != 'allpair':
+            args.pairwise.batch_size = 2
+            logger.info(f'Setting batch_size to 2.')
 
-    #     if args.run.openai_key:
-    #         ranker = OpenAiPairwiseLlmRanker(model_name_or_path=args.run.model_name_or_path,
-    #                                          api_key=args.run.openai_key,
-    #                                          method=args.pairwise.method,
-    #                                          k=args.pairwise.k)
+        if args.run.openai_key:
+            ranker = OpenAiPairwiseLlmRanker(model_name_or_path=args.run.model_name_or_path,
+                                             api_key=args.run.openai_key,
+                                             method=args.pairwise.method,
+                                             k=args.pairwise.k)
 
-    #     elif 'duot5' in args.run.model_name_or_path:
-    #         ranker = DuoT5LlmRanker(model_name_or_path=args.run.model_name_or_path,
-    #                                 tokenizer_name_or_path=args.run.tokenizer_name_or_path,
-    #                                 device=args.run.device,
-    #                                 cache_dir=args.run.cache_dir,
-    #                                 method=args.pairwise.method,
-    #                                 batch_size=args.pairwise.batch_size,
-    #                                 k=args.pairwise.k)
-    #     else:
-    #         ranker = PairwiseLlmRanker(model_name_or_path=args.run.model_name_or_path,
-    #                                    tokenizer_name_or_path=args.run.tokenizer_name_or_path,
-    #                                    device=args.run.device,
-    #                                    cache_dir=args.run.cache_dir,
-    #                                    method=args.pairwise.method,
-    #                                    batch_size=args.pairwise.batch_size,
-    #                                    k=args.pairwise.k)
+        elif 'duot5' in args.run.model_name_or_path:
+            ranker = DuoT5LlmRanker(model_name_or_path=args.run.model_name_or_path,
+                                    tokenizer_name_or_path=args.run.tokenizer_name_or_path,
+                                    device=args.run.device,
+                                    cache_dir=args.run.cache_dir,
+                                    method=args.pairwise.method,
+                                    batch_size=args.pairwise.batch_size,
+                                    k=args.pairwise.k)
+        else:
+            ranker = PairwiseLlmRanker(model_name_or_path=args.run.model_name_or_path,
+                                       tokenizer_name_or_path=args.run.tokenizer_name_or_path,
+                                       device=args.run.device,
+                                       cache_dir=args.run.cache_dir,
+                                       method=args.pairwise.method,
+                                       batch_size=args.pairwise.batch_size,
+                                       k=args.pairwise.k)
 
     if args.listwise:
         if args.run.openai_key:
